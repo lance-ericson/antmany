@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation';
@@ -20,18 +21,20 @@ const SettingsHomeScreen: React.FC<SettingsHomeScreenProps> = ({ navigation }) =
     const subscription = Dimensions.addEventListener('change', ({ window }) => {
       setOrientation(window.width > window.height ? 'landscape' : 'portrait');
     });
-    
+
     return () => subscription.remove();
   }, []);
 
   const menuItems = [
-     {
+    {
       text: "Exclusion Criteria",
-      screen: "AntigenDispSettings" as const
+      screen: "AntigenDispSettings" as const,
+      icon: "clipboard-text-outline"
     },
     {
       text: "Antigrams",
-      screen: "AntigenDispSettings" as const
+      screen: "AntigenDispSettings" as const,
+      icon: "format-list-bulleted"
     },
   ];
 
@@ -43,15 +46,15 @@ const SettingsHomeScreen: React.FC<SettingsHomeScreenProps> = ({ navigation }) =
   };
 
   const handleMenuPress = (screen: string) => {
-      // @ts-ignore - We know these screens exist in our navigation
-      navigation.navigate(screen);
+    // @ts-ignore - We know these screens exist in our navigation
+    navigation.navigate(screen);
   };
 
-    // const [logoutModalVisible, setLogoutModalVisible] = useState(false);
-  
-    // const handleLogout = () => {
-    //   setLogoutModalVisible(true);
-    // };
+  // const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+
+  // const handleLogout = () => {
+  //   setLogoutModalVisible(true);
+  // };
   const handleLogout = () => {
     navigation.reset({
       index: 0,
@@ -62,17 +65,6 @@ const SettingsHomeScreen: React.FC<SettingsHomeScreenProps> = ({ navigation }) =
   // Render portrait view
   const renderPortraitView = () => (
     <>
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={handleGoBack}>
-          <Icon name="arrow-left" size={24} color={COLORS.PRIMARY} />
-          <CustomText variant="medium" style={styles.backText}>Go back</CustomText>
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <CustomText variant="medium" style={styles.logoutText}>Log out</CustomText>
-          <Icon name="logout" size={24} color={COLORS.PRIMARY} />
-        </TouchableOpacity>
-      </View>
       {/* Header */}
       {/* <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={handleGoBack}>
@@ -126,17 +118,6 @@ const SettingsHomeScreen: React.FC<SettingsHomeScreenProps> = ({ navigation }) =
   // Render landscape view (original grid layout)
   const renderLandscapeView = () => (
     <>
-      <View style={styles.header}>
-      <TouchableOpacity style={styles.backButton} onPress={handleGoBack}>
-        <Icon name="arrow-left" size={24} color={COLORS.PRIMARY} />
-        <CustomText variant="medium" style={styles.backText}>Go back</CustomText>
-      </TouchableOpacity>
-      
-      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-        <CustomText variant="medium" style={styles.logoutText}>Log out</CustomText>
-        <Icon name="logout" size={24} color={COLORS.PRIMARY} />
-      </TouchableOpacity>
-    </View>
       {/* Logo Section with Logout */}
       <View style={styles.topSection}>
         <View style={styles.logoContainer}>
@@ -176,20 +157,31 @@ const SettingsHomeScreen: React.FC<SettingsHomeScreenProps> = ({ navigation }) =
     //   orientation === 'landscape' ? styles.containerLandscape : styles.containerPortrait
     // ]}>
     //   {orientation === 'landscape' ? renderLandscapeView() : renderPortraitView()}
-    <SafeAreaView style={[
-      styles.container]}>
-    <View style={[
-      orientation === 'landscape' ? styles.containerLandscape : styles.containerPortrait
-    ]}>
-      {orientation === 'landscape' ? renderLandscapeView() : renderPortraitView()}
-      {/* Footer */}
-      <View style={[
-        styles.footer,
-        orientation === 'landscape' ? styles.footerLandscape : styles.footerPortrait
-      ]}>
-        <CustomText variant="regular" style={styles.footerText}>Innovation by Dream Forge Workshop</CustomText>
+    <SafeAreaView style={[styles.container]}>
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.backButton} onPress={handleGoBack}>
+          <Icon name="arrow-left" size={24} color={COLORS.PRIMARY} />
+          <CustomText variant="medium" style={styles.backText}>Go back</CustomText>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+          <CustomText variant="medium" style={styles.logoutText}>Log out</CustomText>
+          <Icon name="logout" size={24} color={COLORS.PRIMARY} />
+        </TouchableOpacity>
       </View>
-    </View>
+      <View style={[
+        orientation === 'landscape' ? styles.containerLandscape : styles.containerPortrait
+      ]}>
+        {orientation === 'landscape' ? renderLandscapeView() : renderPortraitView()}
+        {/* Footer */}
+
+        <View style={[
+          styles.footer,
+          orientation === 'landscape' ? styles.footerLandscape : styles.footerPortrait
+        ]}>
+          <CustomText variant="regular" style={styles.footerText}>Innovation by Dream Forge Workshop</CustomText>
+        </View>
+      </View>
     </SafeAreaView>
   );
 };
@@ -264,6 +256,8 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.POPPINS_MEDIUM,
   },
   logoutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginTop: 0,
   },
   logoutText: {

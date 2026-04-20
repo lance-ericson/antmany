@@ -3,7 +3,6 @@ import {
   View,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   Dimensions,
   Alert,
   Modal,
@@ -13,6 +12,7 @@ import {
   ActivityIndicator,
   Text
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { launchImageLibrary, pick, types } from 'react-native-image-picker';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';

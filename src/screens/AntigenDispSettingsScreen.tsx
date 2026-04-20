@@ -6,15 +6,17 @@ import {
   TouchableOpacity,
   ScrollView,
   Modal,
-  SafeAreaView,
   Dimensions,
   Alert,
   BackHandler,
   FlatList,
   TextInput
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import DraggableFlatList, { ScaleDecorator, RenderItemParams } from 'react-native-draggable-flatlist';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { RootStackParamList } from '../navigation';
 import CustomText from '../components/CustomText';
 import { COLORS, FONTS } from '../constants/fonts';
@@ -58,6 +60,7 @@ type SelectedAntigens = Record<string, string>;
 type SelectedAntigens2 = Record<string, boolean[]>;
 
 const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ navigation }) => {
+  const [isEditing, setIsEditing] = useState(false);
   // Use null for initial radio button states (nothing selected)
   const [isRhHrChecked, setRhHrChecked] = useState<boolean | null>(null);
   const [isKellChecked, setKellChecked] = useState<boolean | null>(null);
@@ -115,26 +118,26 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
 
 
   const toggleAntigen = (groupName: string, antigen: string) => {
-  setSelected((prevSelected) => {
-    // 1. Get the array of booleans for the current group
-    const currentGroupSelections = prevSelected[groupName] || [];
-    
-    // 2. Find the index of the clicked antigen in the master list
-    const antigenIndex = ConstAntigens.DEFAULT_GROUP_MEMBERS[groupName].indexOf(antigen);
+    setSelected((prevSelected) => {
+      // 1. Get the array of booleans for the current group
+      const currentGroupSelections = prevSelected[groupName] || [];
 
-    // 3. Create a copy of the specific group's selection array
-    const updatedGroupSelections = [...currentGroupSelections];
+      // 2. Find the index of the clicked antigen in the master list
+      const antigenIndex = ConstAntigens.DEFAULT_GROUP_MEMBERS[groupName].indexOf(antigen);
 
-    // 4. Toggle the boolean value at that index
-    updatedGroupSelections[antigenIndex] = !updatedGroupSelections[antigenIndex];
+      // 3. Create a copy of the specific group's selection array
+      const updatedGroupSelections = [...currentGroupSelections];
 
-    // 5. Return the new state object with the updated group
-    return {
-      ...prevSelected,
-      [groupName]: updatedGroupSelections,
-    };
-  });
-};
+      // 4. Toggle the boolean value at that index
+      updatedGroupSelections[antigenIndex] = !updatedGroupSelections[antigenIndex];
+
+      // 5. Return the new state object with the updated group
+      return {
+        ...prevSelected,
+        [groupName]: updatedGroupSelections,
+      };
+    });
+  };
 
   const handleLogout = () => {
     setLogoutModalVisible(true);
@@ -186,7 +189,8 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
   // const availableAntigens = Object.keys(ANTIGEN_PAIRS)
   //   .filter(antigen => specifiedAntigens.includes(antigen))
   //   .filter(antigen => !antibodies.some(a => a.name === antigen));
-  const availableAntigens = [...specifiedAntigens] .filter(antigen => !antibodies.some(a => a.name === antigen));
+  const safeAntibodies = Array.isArray(antibodies) ? antibodies : [];
+  const availableAntigens = [...specifiedAntigens].filter(antigen => !safeAntibodies.some(a => a.name === antigen));
 
   // Store position information for dropdown
   const [dropdownPosition, setDropdownPosition] = useState<{
@@ -208,6 +212,7 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
   });
 
   const scrollViewRef = useRef<ScrollView>(null);
+  const manuInputRef = useRef<TextInput>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
 
   // Add these state variables to track original values
@@ -215,15 +220,174 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
   const [originalAddOnRuleOut, setOriginalAddOnRuleOut] = useState<number | null>(null);
   const [originalAntibodies, setOriginalAntibodies] = useState<AntibodyRule[]>([]);
   // 1. Create a Type from your array
-type AntigenManufacturer = typeof ConstAntigens.ANTIGEN_MANUFACTURERS[0];
+  type AntigenManufacturer = typeof ConstAntigens.ANTIGEN_MANUFACTURERS[0];
 
-// 2. Tell the state to only accept those specific strings (or a default)
-const [manuchoice, setManuChoice] = useState("Create New");//<AntigenManufacturer>("DEFAULT"); 
-const [manuName, setManuNameText] = useState(""); 
+  // 2. Tell the state to only accept those specific strings (or a default)
+  const [manuchoice, setManuChoice] = useState("Create New");//<AntigenManufacturer>("DEFAULT"); 
+  const [manuName, setManuNameText] = useState("");
 
   const [reorderRhHrflag, setRHHRReorder] = useState(false);
   const [groups, setGroups] = useState(ConstAntigens.DEFAULT_GROUP_ORDER);
-  const [rhhrAntigens, setRHHRAnts] = useState(ConstAntigens.DataSources[manuchoice]["Rh-hr"]);
+  const [rhhrAntigens, setRHHRAnts] = useState((ConstAntigens.DataSources[manuchoice] || ConstAntigens.DEFAULT_GROUP_MEMBERS)["Rh-hr"]);
+  const [groupMembers, setGroupMembers] = useState<Record<string, string[]>>({});
+
+  useEffect(() => {
+    const loadManuData = async () => {
+      const storedGroupsStr = await DatabaseService.getSetting(`groups_${manuchoice}`);
+      const storedMembersStr = await DatabaseService.getSetting(`groupMembers_${manuchoice}`);
+      const storedSelectedAntStr = await DatabaseService.getSetting(`selectedAnt_${manuchoice}`);
+
+      if (storedGroupsStr && storedGroupsStr.value && storedMembersStr && storedMembersStr.value) {
+        setGroups(JSON.parse(storedGroupsStr.value));
+        setGroupMembers(JSON.parse(storedMembersStr.value));
+      } else {
+        const initialMembers = ConstAntigens.DataSources[manuchoice] || ConstAntigens.DEFAULT_GROUP_MEMBERS;
+        const copyMembers: Record<string, string[]> = {};
+        for (const key in initialMembers) {
+          copyMembers[key] = [...initialMembers[key]];
+        }
+        setGroupMembers(copyMembers);
+        setGroups(ConstAntigens.MANUFACTURER_GRPORDER_MAP[manuchoice] || ConstAntigens.DEFAULT_GROUP_ORDER);
+      }
+
+      if (storedSelectedAntStr && storedSelectedAntStr.value) {
+        setSelected(JSON.parse(storedSelectedAntStr.value));
+      } else {
+        setSelected({});
+      }
+    };
+    loadManuData();
+  }, [manuchoice]);
+
+  const moveAntigen = (groupName: string, index: number, direction: -1 | 1) => {
+    const list = [...(groupMembers[groupName] || [])];
+    const selections = [...(selectedAnt[groupName] || [])];
+    const newIndex = index + direction;
+
+    if (newIndex >= 0 && newIndex < list.length) {
+      // Move antigen name
+      const [movedItem] = list.splice(index, 1);
+      list.splice(newIndex, 0, movedItem);
+
+      // Move selection state if it exists
+      if (selections.length > 0) {
+        const [movedSelection] = selections.splice(index, 1);
+        selections.splice(newIndex, 0, movedSelection);
+      }
+
+      setGroupMembers(prev => ({ ...prev, [groupName]: list }));
+      setSelected(prev => ({ ...prev, [groupName]: selections }));
+
+      // Keep old rhhr sync working if they use the hidden panel
+      if (groupName.toLowerCase() === "rh-hr") {
+        setRHHRAnts(list);
+      }
+    }
+  };
+
+  const [manufacturersList, setManufacturersList] = useState<string[]>(ConstAntigens.ANTIGEN_MANUFACTURERS);
+
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editTarget, setEditTarget] = useState<{ type: 'group' | 'antigen', groupName: string, antigenName?: string, index?: number } | null>(null);
+  const [editInputValue, setEditInputValue] = useState("");
+
+  const saveEdit = () => {
+    if (!editInputValue.trim()) return;
+    const newText = editInputValue.trim();
+    if (editTarget?.type === 'group') {
+      const oldGroupName = editTarget.groupName;
+      // Validation to check if group already exists
+      if (groups.includes(newText) && newText !== oldGroupName) {
+        Alert.alert("Duplicate Group", "A group with this name already exists.");
+        return;
+      }
+      // update groups array
+      const newGroups = groups.map(g => g === oldGroupName ? newText : g);
+      setGroups(newGroups);
+      // update groupMembers record
+      setGroupMembers(prev => {
+        const newMembers = { ...prev };
+        newMembers[newText] = newMembers[oldGroupName] || [];
+        if (newText !== oldGroupName) delete newMembers[oldGroupName];
+        return newMembers;
+      });
+      // Update selectedAnt
+      setSelected((prev: any) => {
+        const newSelected = { ...prev };
+        if (newSelected[oldGroupName]) {
+          newSelected[newText] = newSelected[oldGroupName];
+          if (newText !== oldGroupName) delete newSelected[oldGroupName];
+        }
+        return newSelected;
+      });
+    } else if (editTarget?.type === 'antigen') {
+      const groupName = editTarget.groupName;
+      const idx = editTarget.index!;
+
+      // Validation to check if antigen already exists in the same group
+      const currentAntigens = groupMembers[groupName] || [];
+      if (currentAntigens.some((name, i) => i !== idx && name === newText)) {
+        Alert.alert("Duplicate Antigen", `An antigen named "${newText}" already exists in the "${groupName}" group.`);
+        return;
+      }
+
+      setGroupMembers(prev => {
+        const newMembers = { ...prev };
+        const list = [...(newMembers[groupName] || [])];
+        list[idx] = newText;
+        newMembers[groupName] = list;
+        return newMembers;
+      });
+      if (groupName.toLowerCase() === 'rh-hr') {
+        setRHHRAnts(prev => {
+          const list = [...prev];
+          list[idx] = newText;
+          return list;
+        });
+      }
+    }
+    setEditModalVisible(false);
+  };
+
+  useEffect(() => {
+    const initMfrs = async () => {
+      const mfrListStr = await DatabaseService.getSetting('manufacturersList');
+      if (mfrListStr && mfrListStr.value) {
+        setManufacturersList(JSON.parse(mfrListStr.value));
+      }
+      const loadedManuchoice = await DatabaseService.getSetting('manuchoice');
+      if (loadedManuchoice && loadedManuchoice.value) {
+        setManuChoice(loadedManuchoice.value);
+      }
+    };
+    initMfrs();
+  }, []);
+
+  const handleDeleteManufacturer = () => {
+    if (manuchoice === "Create New") {
+      Alert.alert("Cannot Delete", "The default custom placeholder cannot be deleted.");
+      return;
+    }
+    Alert.alert(
+      "Delete Manufacturer",
+      `Are you sure you want to delete ${manuchoice}?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete", style: "destructive", onPress: () => {
+            setManufacturersList(prev => prev.filter(m => m !== manuchoice));
+            setManuChoice("Create New");
+            setManuNameText("");
+          }
+        }
+      ]
+    );
+  };
+
+  const handleEditManufacturer = () => {
+    manuInputRef.current?.focus();
+  };
+
 
   const handleGoBack = () => {
     // Check if there are unsaved changes
@@ -258,8 +422,9 @@ const [manuName, setManuNameText] = useState("");
       return;
     }
 
-    const newId = antibodies.length > 0 ? Math.max(...antibodies.map(a => a.id)) + 1 : 1;
-    setAntibodies([...antibodies, { id: newId, name: availableAntigens[0], threshold: '2' }]);
+    const safeAntibodies = Array.isArray(antibodies) ? antibodies : [];
+    const newId = safeAntibodies.length > 0 ? Math.max(...safeAntibodies.map(a => a.id)) + 1 : 1;
+    setAntibodies([...safeAntibodies, { id: newId, name: availableAntigens[0], threshold: '2' }]);
   };
 
   /**
@@ -282,45 +447,42 @@ const [manuName, setManuNameText] = useState("");
     }
   };
   const moveRhHrItem = (index: number, direction: -1 | 1) => {
+    const list = [...rhhrAntigens];
+    const selections = [...(selectedAnt["Rh-hr"] || [])];
     const newIndex = index + direction;
-    // Check if the new index is within valid bounds
-    if (newIndex >= 0 && newIndex < rhhrAntigens.length) {
-      // Create a copy of the array to avoid mutating the state directly
-      const updatedAntgens= [...rhhrAntigens];
-      // Remove the item from its current position
-      const [movedItem] = updatedAntgens.splice(index, 1);
-      // Insert the item into its new position
-      updatedAntgens.splice(newIndex, 0, movedItem);
-      // Update the state to re-render the list
-      setRHHRAnts([...updatedAntgens])
+
+    if (newIndex >= 0 && newIndex < list.length) {
+      const [movedItem] = list.splice(index, 1);
+      list.splice(newIndex, 0, movedItem);
+
+      if (selections.length > 0) {
+        const [movedSelection] = selections.splice(index, 1);
+        selections.splice(newIndex, 0, movedSelection);
+      }
+
+      setRHHRAnts(list);
+      setGroupMembers(prev => ({ ...prev, "Rh-hr": list }));
+      setSelected(prev => ({ ...prev, "Rh-hr": selections }));
     }
   };
 
-  
-  const renderItem = ({ item, index }: { item: string; index: number }) => (
-    <View style={styles.itemContainer}>
-      <Text style={styles.itemText}>{item}</Text>
-      <View style={styles.buttonsContainer}>
-        {/* Up Button */}
-        <TouchableOpacity
-          onPress={() => moveItem(index, -1)}
-          disabled={index === 0} // Disable if at the top
-          style={[styles.button, index === 0 && styles.buttonDisabled]}
-        >
-          {/* Using a simple 'up' symbol, replace with actual icon if using a library */}
-          <Icon name="arrow-up" size={20} color={index === 0 ? '#6264d4' : '#000'} />
-        </TouchableOpacity>
 
-        {/* Down Button */}
-        <TouchableOpacity
-          onPress={() => moveItem(index, 1)}
-          disabled={index === groups.length - 1} // Disable if at the bottom
-          style={[styles.button, index === groups.length - 1 && styles.buttonDisabled]}
-        >
-          <Icon name="arrow-down" size={20} color={index === groups.length - 1 ? '#6264d4' : '#000'} />
-        </TouchableOpacity>
-      </View>
-    </View>
+  const renderItem = ({ item, drag, isActive }: RenderItemParams<string>) => (
+    <ScaleDecorator>
+      <TouchableOpacity
+        activeOpacity={1}
+        onLongPress={drag}
+        disabled={isActive}
+        style={[styles.itemContainer, { backgroundColor: isActive ? '#e0f0f5' : '#f9f9f9', opacity: isActive ? 0.8 : 1 }]}
+      >
+        <Text style={styles.itemText}>{item}</Text>
+        <View style={styles.buttonsContainer}>
+          <TouchableOpacity onPressIn={drag}>
+            <Icon name="drag-horizontal-variant" size={24} color="#666" />
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </ScaleDecorator>
   );
 
   const renderRHHRItem = ({ item, index }: { item: string; index: number }) => (
@@ -408,8 +570,9 @@ const [manuName, setManuNameText] = useState("");
   };
 
   const handleAntigenSelection = (id: number, antigen: string) => {
+    const safeAntibodies = Array.isArray(antibodies) ? antibodies : [];
     setAntibodies(
-      antibodies.map(antibody =>
+      safeAntibodies.map(antibody =>
         antibody.id === id
           ? { ...antibody, name: antigen }
           : antibody
@@ -419,8 +582,9 @@ const [manuName, setManuNameText] = useState("");
   };
 
   const handleThresholdSelection = (id: number, threshold: string) => {
+    const safeAntibodies = Array.isArray(antibodies) ? antibodies : [];
     setAntibodies(
-      antibodies.map(antibody =>
+      safeAntibodies.map(antibody =>
         antibody.id === id
           ? { ...antibody, threshold }
           : antibody
@@ -430,60 +594,65 @@ const [manuName, setManuNameText] = useState("");
   };
 
   const deleteAntibody = (id: number) => {
-    setAntibodies(antibodies.filter(antibody => antibody.id !== id));
+    const safeAntibodies = Array.isArray(antibodies) ? antibodies : [];
+    setAntibodies(safeAntibodies.filter(antibody => antibody.id !== id));
   };
 
   const handleSave = async () => {
     // Validate required selections
-    if (primaryRuleOut === null) {
-      Alert.alert('Required Selection', 'Please select a Primary Rule-Out option');
-      return;
-    }
+    // if (primaryRuleOut === null) {
+    //   Alert.alert('Required Selection', 'Please select a Primary Rule-Out option');
+    //   return;
+    // }
 
     try {
-      // Save manufacturer setting
-      await DatabaseService.saveSetting('manuchoice', manuchoice.toString());
-      await DatabaseService.saveSetting('rhhrAntigens', rhhrAntigens.join(";"));
-      //const stringValue = JSON.stringify(DEFAULT_GROUP_MEMBERS);
-      //const restoredSettings = JSON.parse(jsonStringFromDB) as Record<string, string[]>;
-      // Assume 'response' is the data you got from your DB
-// const jsonStringFromDB = response.antigen_settings; 
+      let currentChoice = manuchoice;
+      let currentList = [...manufacturersList];
 
-// try {
-//   // Convert string back into a Record<string, string[]>
-//   const restoredSettings = JSON.parse(jsonStringFromDB);
-  
-//   // Now you can access it like before:
-//   console.log(restoredSettings["Rh-hr"]); // ["D", "C", "E"...]
-  
-//   // If using state, update it here:
-//   setGroupMembers(restoredSettings);
-// } catch (error) {
-//   console.error("Failed to parse settings from database", error);
-// }
-      
-      
-      // Save add-on rule out setting - if null, it should be 0
-      // const addOnRuleOutValue = addOnRuleOut === null ? 0 : addOnRuleOut;
-      // await DatabaseService.saveSetting('addOnRuleOut', addOnRuleOutValue.toString());
+      if (manuName !== "" && manuName !== manuchoice) {
+        if (!currentList.includes(manuName)) {
+          if (manuchoice !== "Create New") {
+            currentList = currentList.filter(m => m !== manuchoice);
+          }
+          currentList.push(manuName);
+        }
+        currentChoice = manuName;
+        setManuChoice(currentChoice);
+        setManufacturersList(currentList);
+        setManuNameText("");
+      }
 
-      // // Convert antibodies to format expected by the database
-      // const antibodyRules = antibodies.map(antibody => ({
-      //   id: antibody.id,
-      //   name: antibody.name,
-      //   isSelected: 'Yes', // We're always selecting these antigens
-      //   isHeterozygous: antibody.threshold // Store threshold in isHeterozygous field
-      // }));
+      await DatabaseService.saveSetting('manuchoice', currentChoice);
+      await DatabaseService.saveSetting('manufacturersList', JSON.stringify(currentList));
+      await DatabaseService.saveSetting(`groups_${currentChoice}`, JSON.stringify(groups));
+      await DatabaseService.saveSetting(`groupMembers_${currentChoice}`, JSON.stringify(groupMembers));
+      await DatabaseService.saveSetting(`selectedAnt_${currentChoice}`, JSON.stringify(selectedAnt));
 
-      // console.log(antibodyRules);
+      // Save Primary Rule-Out
+      if (primaryRuleOut !== null) {
+        await DatabaseService.saveSetting('primaryRuleOut', primaryRuleOut.toString());
+      }
 
-      // // Save antibody rules
-      // await DatabaseService.saveAntibodyRules(antibodyRules);
+      // Save Add-on Rule-Out
+      const addOnRuleOutValue = addOnRuleOut === null ? 0 : addOnRuleOut;
+      await DatabaseService.saveSetting('addOnRuleOut', addOnRuleOutValue.toString());
 
-      // // After successful save, update original values to match current values
-      // setOriginalPrimaryRuleOut(primaryRuleOut);
-      // setOriginalAddOnRuleOut(addOnRuleOut);
-      // setOriginalAntibodies([...antibodies]);
+      // Convert antibodies to format expected by the database
+      const safeAntibodies = Array.isArray(antibodies) ? antibodies : [];
+      const antibodyRulesData = safeAntibodies.map(antibody => ({
+        id: antibody.id,
+        name: antibody.name,
+        isSelected: 'Yes',
+        isHeterozygous: antibody.threshold
+      }));
+
+      // Save antibody rules
+      await DatabaseService.saveAntibodyRules(antibodyRulesData);
+
+      // After successful save, update original values to match current values
+      setOriginalPrimaryRuleOut(primaryRuleOut);
+      setOriginalAddOnRuleOut(addOnRuleOut);
+      setOriginalAntibodies([...antibodies]);
 
       // Show success message
       Alert.alert('Success', 'Antigens Settings saved successfully');
@@ -512,21 +681,21 @@ const [manuName, setManuNameText] = useState("");
     );
   };
 
-  // const renderThresholdDropdown = (id: number, threshold: string) => {
-  //   const isOpen = dropdownVisible && dropdownVisible.id === id && dropdownVisible.field === 'threshold';
+  const renderThresholdDropdown = (id: number, threshold: string) => {
+    const isOpen = dropdownVisible && dropdownVisible.id === id && dropdownVisible.field === 'threshold';
 
-  //   return (
-  //     <View style={styles.dropdownContainer}>
-  //       <TouchableOpacity
-  //         style={[styles.dropdownSelector, isOpen && { borderColor: '#5c8599' }]}
-  //         onPress={(event) => toggleDropdown(id, 'threshold', event)}
-  //       >
-  //         <Text style={styles.selectedValue}>{threshold}</Text>
-  //         {/* <Icon name={isOpen ? "chevron-up" : "chevron-down"} size={16} color="#666" /> */}
-  //       </TouchableOpacity>
-  //     </View>
-  //   );
-  // };
+    return (
+      <View style={styles.dropdownContainer}>
+        <TouchableOpacity
+          style={[styles.dropdownSelector, isOpen && { borderColor: '#5c8599' }]}
+          onPress={(event) => toggleDropdown(id, 'threshold', event)}
+        >
+          <Text style={styles.selectedValue}>{threshold}</Text>
+          {/* <Icon name={isOpen ? "chevron-up" : "chevron-down"} size={16} color="#666" /> */}
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
   // // Toggle the Anti-D rule selection
   // const handleAntiDSelection = (value: number) => {
@@ -538,79 +707,109 @@ const [manuName, setManuNameText] = useState("");
   //   }
   // };
 
-const renderAntigenContent = () => {
-  // 1. Always start with an empty array to "clear" previous renders
-  const content: ReactNode[] = [];
-  const selectedData = ConstAntigens.DataSources[manuchoice];
+  const renderAntigenContent = () => {
+    // 1. Always start with an empty array to "clear" previous renders
+    const content: ReactNode[] = [];
+    const selectedData = groupMembers;
 
-  for (const groupName in selectedData) {
-    const antigens = selectedData[groupName];
-    const antigenButtons: ReactNode[] = [];
+    for (const groupName of groups) {
+      if (!selectedData[groupName]) continue;
+      const antigens = selectedData[groupName];
+      const antigenButtons: ReactNode[] = [];
 
-    // Build the individual antigen buttons
-    for (let i = 0; i < antigens.length; i++) {
-      const antigen = antigens[i];
-      if (!antigen) continue;
+      // Build the individual antigen buttons
+      for (let i = 0; i < antigens.length; i++) {
+        const antigen = antigens[i];
+        if (!antigen) continue;
 
-      const isSelected = selectedAnt[groupName] ? selectedAnt[groupName][i] : false;
+        const isSelected = selectedAnt[groupName] ? selectedAnt[groupName][i] : false;
 
-      antigenButtons.push(
-        <TouchableOpacity
-          key={`${groupName}-${antigen}`}
-          style={styles.rradioOption}
-          onPress={() => toggleAntigen(groupName, antigen)}
-        >
-          <View style={[styles.radioCircle, isSelected && styles.selectedCircle]}>
-            {isSelected && <View style={styles.selectedInnerCircle} />}
-          </View>
-          <Text style={styles.antigenText}>{antigen}</Text>
-        </TouchableOpacity>
-      );
-    }
 
-    // Handle the Reorder Section for Rh-Hr
-    if (groupName.toLowerCase() === "rh-hr") {
-      content.push(
-        <TouchableOpacity
-          key="reorder-toggle-btn"
-          style={styles.saveButton}
-          onPress={() => setRHHRReorder(!reorderRhHrflag)}
-        >
-          <Text style={styles.saveButtonText}>
-            {reorderRhHrflag ? "Hide Reorder" : "Reorder RH-HR Group"}
-          </Text>
-        </TouchableOpacity>
-      );
 
-      // This section only exists in the array if the flag is true
-      if (reorderRhHrflag) {
-        content.push(
-          <View key="reorder-flatlist-container">
-            <Text style={styles.saveButtonText}>Reorder RH-HR antigen display</Text>
-            <FlatList
-              data={rhhrAntigens}
-              renderItem={renderRHHRItem}
-              keyExtractor={(item) => item}
-              style={styles.list}
-              extraData={rhhrAntigens} 
-              scrollEnabled={false} // Recommended if nested in a ScrollView
-            />
+        antigenButtons.push(
+          <View key={`${groupName}-${antigen}`} style={styles.rradioOptionCont}>
+            {isEditing && (
+              <TouchableOpacity onPress={() => moveAntigen(groupName, i, -1)} disabled={i === 0}>
+                <Icon name="chevron-left" size={20} color={i === 0 ? '#ccc' : '#6264d4'} />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.rradioOptionInner}
+              onPress={() => isEditing && toggleAntigen(groupName, antigen)}
+              disabled={!isEditing}
+            >
+              <View style={[styles.radioCircle, isSelected && styles.selectedCircle, !isEditing && { borderColor: '#ccc' }]}>
+                {isSelected && <View style={[styles.selectedInnerCircle, !isEditing && { backgroundColor: '#ccc' }]} />}
+              </View>
+              <Text style={styles.antigenText}>{antigen}</Text>
+            </TouchableOpacity>
+            {isEditing && (
+              <>
+                <TouchableOpacity style={{ marginHorizontal: 4 }} onPress={() => { setEditTarget({ type: 'antigen', groupName, index: i }); setEditInputValue(antigen); setEditModalVisible(true); }}>
+                  <Icon name="pencil" size={14} color="#888" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => moveAntigen(groupName, i, 1)} disabled={i === antigens.length - 1}>
+                  <Icon name="chevron-right" size={20} color={i === antigens.length - 1 ? '#ccc' : '#6264d4'} />
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         );
       }
+
+      // Handle the Reorder Section for Rh-Hr
+      // if (groupName.toLowerCase() === "rh-hr") {
+      //   content.push(
+      //     <TouchableOpacity
+      //       key="reorder-toggle-btn"
+      //       style={styles.saveButton}
+      //       onPress={() => setRHHRReorder(!reorderRhHrflag)}
+      //     >
+      //       <Text style={styles.saveButtonText}>
+      //         {reorderRhHrflag ? "Hide Reorder" : "Reorder RH-HR Group"}
+      //       </Text>
+      //     </TouchableOpacity>
+      //   );
+
+      //   // This section only exists in the array if the flag is true
+      //   if (reorderRhHrflag) {
+      //     content.push(
+      //       <View key="reorder-flatlist-container">
+      //         <Text style={styles.saveButtonText}>Reorder RH-HR antigen display</Text>
+      //         <FlatList
+      //           data={rhhrAntigens}
+      //           renderItem={renderRHHRItem}
+      //           keyExtractor={(item) => item}
+      //           style={styles.list}
+      //           extraData={rhhrAntigens}
+      //           scrollEnabled={false} // Recommended if nested in a ScrollView
+      //         />
+      //       </View>
+      //     );
+      //   }
+      // }
+
+      // Push the main group container
+      content.push(
+        <View key={groupName} style={styles.groupContainer}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+            <Text style={[styles.groupTitle, { marginBottom: 0 }]}>{groupName}</Text>
+            {isEditing && (
+              <TouchableOpacity
+                style={{ marginLeft: 10, padding: 4 }}
+                onPress={() => { setEditTarget({ type: 'group', groupName }); setEditInputValue(groupName); setEditModalVisible(true); }}
+              >
+                <Icon name="pencil" size={16} color="#666" />
+              </TouchableOpacity>
+            )}
+          </View>
+          <View style={styles.antigenGrid}>{antigenButtons}</View>
+        </View>
+      );
     }
 
-    // Push the main group container
-    content.push(
-      <View key={groupName} style={styles.groupContainer}>
-        <Text style={styles.groupTitle}>{groupName}</Text>
-        <View style={styles.antigenGrid}>{antigenButtons}</View>
-      </View>
-    );
-  }
-
-  return content;
-};
+    return content;
+  };
   // Load rules from database when component mounts
   useEffect(() => {
     const loadRules = async () => {
@@ -674,19 +873,19 @@ const renderAntigenContent = () => {
       gestureEnabled: !hasChanges()
     });
   }, [
-    primaryRuleOut, 
-    originalPrimaryRuleOut, 
-    addOnRuleOut, 
-    originalAddOnRuleOut, 
-    antibodies, 
-    originalAntibodies, 
+    primaryRuleOut,
+    originalPrimaryRuleOut,
+    addOnRuleOut,
+    originalAddOnRuleOut,
+    antibodies,
+    originalAntibodies,
     navigation
   ]);
 
   // Add back button handler for Android
   useFocusEffect(
     useCallback(() => {
-      const hasChanges = 
+      const hasChanges =
         primaryRuleOut !== originalPrimaryRuleOut ||
         addOnRuleOut !== originalAddOnRuleOut ||
         JSON.stringify(antibodies) !== JSON.stringify(originalAntibodies);
@@ -707,68 +906,69 @@ const renderAntigenContent = () => {
 
       return () => subscription.remove(); // Cleanup on unmount
     }, [
-      primaryRuleOut, 
-      originalPrimaryRuleOut, 
-      addOnRuleOut, 
-      originalAddOnRuleOut, 
-      antibodies, 
+      primaryRuleOut,
+      originalPrimaryRuleOut,
+      addOnRuleOut,
+      originalAddOnRuleOut,
+      antibodies,
       originalAntibodies
     ])
   );
 
-// 1. Create the lookup mapping
-const MANUFACTURER_DATA_MAP: Record<typeof ConstAntigens.ANTIGEN_MANUFACTURERS[number], Record<string, string[] | Set<string>>> = {
-  DEFAULT: ConstAntigens.DEFAULT_GROUP_MEMBERS, 
-  ORTHO: ConstAntigens.ORTHO_GROUP_MEMBERS,
-  ALBA: ConstAntigens.ALBA_GROUP_MEMBERS,
-  BIOTEST: ConstAntigens.BIOTEST_GROUP_MEMBERS,
-  IMMUCOR: ConstAntigens.IMMUCOR_GROUP_MEMBERS,
-  MEDION: ConstAntigens.MEDION_GROUP_MEMBERS,
-  GRIFOLS: ConstAntigens.BIORAD_GRIFOLS_GROUP_MEMBERS,
-  QUOTIENT: ConstAntigens.QUOTIENT_GROUP_MEMBERS,
-  "BIO-RAD": ConstAntigens.BIORAD_GRIFOLS_GROUP_MEMBERS,
-};
+  // 1. Create the lookup mapping
+  const MANUFACTURER_DATA_MAP: Record<typeof ConstAntigens.ANTIGEN_MANUFACTURERS[number], Record<string, string[] | Set<string>>> = {
+    DEFAULT: ConstAntigens.DEFAULT_GROUP_MEMBERS,
+    ORTHO: ConstAntigens.ORTHO_GROUP_MEMBERS,
+    ALBA: ConstAntigens.ALBA_GROUP_MEMBERS,
+    BIOTEST: ConstAntigens.BIOTEST_GROUP_MEMBERS,
+    IMMUCOR: ConstAntigens.IMMUCOR_GROUP_MEMBERS,
+    MEDION: ConstAntigens.MEDION_GROUP_MEMBERS,
+    GRIFOLS: ConstAntigens.BIORAD_GRIFOLS_GROUP_MEMBERS,
+    QUOTIENT: ConstAntigens.QUOTIENT_GROUP_MEMBERS,
+    "BIO-RAD": ConstAntigens.BIORAD_GRIFOLS_GROUP_MEMBERS,
+  };
 
-// let content: ReactNode[] = [];
-// content = renderAntigenContent();
+  // let content: ReactNode[] = [];
+  // content = renderAntigenContent();
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={handleGoBack}>
-          <Icon name="arrow-left" size={24} color="#336699" />
-          <Text style={styles.backText}>Go back</Text>
-        </TouchableOpacity>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaView style={styles.container}>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={handleGoBack}>
+            <Icon name="arrow-left" size={24} color="#336699" />
+            <Text style={styles.backText}>Go back</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.logoutButton}
-          onPress={handleLogout}
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={handleLogout}
+          >
+            <Text style={styles.logoutText}>Log out</Text>
+            <Icon name="logout" size={24} color="#336699" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.divider} />
+
+        <CustomText variant="medium" style={styles.screenTitle}>Customize Antigram Table</CustomText>
+        <CustomText variant="medium" style={styles.whatToDo}>Configure the antigen panel according to your manufacturer</CustomText>
+
+        <ScrollView
+          style={styles.scrollContent}
+          ref={scrollViewRef}
+          onScroll={(event) => {
+            setScrollOffset(event.nativeEvent.contentOffset.y);
+            // If dropdown is visible, close it when scrolling
+            if (dropdownVisible) {
+              setDropdownVisible(null);
+            }
+          }}
+          scrollEventThrottle={16}
         >
-          <Text style={styles.logoutText}>Log out</Text>
-          <Icon name="logout" size={24} color="#336699" />
-        </TouchableOpacity>
-      </View>
 
-      <View style={styles.divider} />
-
-      <CustomText variant="medium" style={styles.screenTitle}>Customize Antigram Table</CustomText>
-      <CustomText variant="medium" style={styles.whatToDo}>Configure the antigen panel according to your manufacturer</CustomText>
-
-      <ScrollView
-        style={styles.scrollContent}
-        ref={scrollViewRef}
-        onScroll={(event) => {
-          setScrollOffset(event.nativeEvent.contentOffset.y);
-          // If dropdown is visible, close it when scrolling
-          if (dropdownVisible) {
-            setDropdownVisible(null);
-          }
-        }}
-        scrollEventThrottle={16}
-      >
-
-{/*     <View style={styles.container}>
+          {/*     <View style={styles.container}>
       <Text style={styles.fieldText}>Manufacturer:</Text>
       {ANTIGEN_MANUFACTURERS.map((item) => (
         <TouchableOpacity
@@ -782,9 +982,9 @@ const MANUFACTURER_DATA_MAP: Record<typeof ConstAntigens.ANTIGEN_MANUFACTURERS[n
           <Text style={styles.fieldText}>{item}</Text>
         </TouchableOpacity>
       ))}
-    </View>  */}       
+    </View>  */}
 
-    {/* <View style={styles.container}>
+          {/* <View style={styles.container}>
       <Text style={styles.fieldText}>Choose a Manufacturer:</Text>
       <Picker
         selectedValue={manuchoice}
@@ -803,240 +1003,332 @@ const MANUFACTURER_DATA_MAP: Record<typeof ConstAntigens.ANTIGEN_MANUFACTURERS[n
 
       </Picker>
       </View> */}
-      <View style={styles.container}>
-        <Text style={styles.fieldText}>Choose a Manufacturer:</Text>
-        
-        <View style={styles.pickerWrapper}>
-          <Picker
-            selectedValue={manuchoice}
-            onValueChange={(itemValue) => setManuChoice(itemValue)}
-            style={styles.picker}
-            dropdownIconColor="#007AFF"
-          >
-            <Picker.Item label="Select Manufacturer..." value="" />
-            
-            {/* Mapping through the array to generate items dynamically */}
-            {ConstAntigens.ANTIGEN_MANUFACTURERS.map((manufacturer, index) => (
-              <Picker.Item 
-                key={`${manufacturer}-${index}`} 
-                label={manufacturer} 
-                value={manufacturer} 
-              />
-            ))}
-          </Picker>
+          <View style={styles.container}>
+            <Text style={styles.fieldText}>Choose a Manufacturer:</Text>
 
-          {/* The pointerEvents="none" ensures the picker still opens when clicking the icon */}
-          {/* <View style={styles.iconOverlay} pointerEvents="none">
-            <Text style={styles.chevron}>▼</Text>
-          </View> */}
-        </View>
-      </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <View style={[styles.pickerWrapper, { flex: 1 }]}>
+                <Picker
+                  selectedValue={manuchoice}
+                  onValueChange={(itemValue) => setManuChoice(itemValue)}
+                  style={styles.picker}
+                  dropdownIconColor="#007AFF"
+                >
+                  <Picker.Item label="Select Manufacturer..." value="" />
 
-        {/* Primary Rules Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionLeftTitleContainer}>
-            <Text style={styles.sectionLeftTitle}>Antigen Panel Configuration</Text>
-            {/* <TouchableOpacity onPress={() => showTooltip('primaryRule')}>
-              <Icon name="information-outline" size={22} color="#336699" />
-            </TouchableOpacity> */}
+                  {/* Mapping through the array to generate items dynamically */}
+                  {manufacturersList.map((manufacturer, index) => (
+                    <Picker.Item
+                      key={`${manufacturer}-${index}`}
+                      label={manufacturer}
+                      value={manufacturer}
+                    />
+                  ))}
+                </Picker>
+              </View>
+              <TouchableOpacity onPress={handleDeleteManufacturer} style={{ marginLeft: 10 }}>
+                <Icon name="delete" size={24} color="red" />
+              </TouchableOpacity>
+            </View>
           </View>
-          {/* <View style={styles.fieldContainer}>
+
+          {/* Primary Rules Section */}
+          <View style={styles.section}>
+            <View style={[styles.sectionLeftTitleContainer, { justifyContent: 'space-between', alignItems: 'center', marginTop: 20 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                <Text style={styles.sectionLeftTitle}>Antigen Panel Configuration</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setIsEditing(!isEditing)}
+                style={{ backgroundColor: isEditing ? '#888' : '#336699', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 6 }}
+              >
+                <Text style={{ color: '#fff', fontWeight: 'bold' }}>{isEditing ? 'Cancel' : 'Edit'}</Text>
+              </TouchableOpacity>
+            </View>
+            {/* <View style={styles.fieldContainer}>
             {(
               <Text style={styles.fieldText}>Manufacturer (edit to change name): {manuchoice}</Text>
             )}
           </View>  */}
-          <View style={styles.fieldContainer}>
-            <TextInput
-              style={styles.fieldText} // Apply text styles here
-              value={manuName === "" ? manuchoice : manuName} // The variable holding the manufacturer name
-              onChangeText={(text) => setManuNameText(text)} // Function to update state
-              placeholder="Or enter Manufacturer"
-            />
+            <View style={styles.fieldContainer}>
+              <TextInput
+                ref={manuInputRef}
+                style={styles.fieldText} // Apply text styles here
+                value={manuName === "" ? manuchoice : manuName} // The variable holding the manufacturer name
+                onChangeText={(text) => setManuNameText(text)} // Function to update state
+                placeholder="Or enter Manufacturer"
+              />
+            </View>
+            {/* SPLIT LAYOUT */}
+            <View style={{ flexDirection: 'row', flex: 1 }}>
+              {/* LEFT SIDE */}
+              <View style={{ flex: isEditing ? 6 : 10, paddingRight: isEditing ? 15 : 0 }}>
+                <Text style={styles.sectionLeftSubtitle}>Blood Group Antigens</Text>
+
+                <ScrollView style={[styles.scrcontainer, { minHeight: 400 }]}>
+                  {renderAntigenContent()}
+                </ScrollView>
+              </View>
+
+              {/* RIGHT SIDE */}
+              {isEditing && (
+                <View style={{ flex: 4, paddingLeft: 10 }}>
+                  <Text style={styles.sectionLeftTitle}>Reorder Antigen Groups</Text>
+                  <View style={{ minHeight: 400, flex: 1, backgroundColor: '#fff', borderRadius: 8, padding: 10 }}>
+                    <DraggableFlatList
+                      data={groups}
+                      renderItem={renderItem}
+                      keyExtractor={(item) => item}
+                      onDragEnd={({ data }) => setGroups(data)}
+                      style={styles.list}
+                      containerStyle={{ flex: 1 }}
+                      nestedScrollEnabled={true}
+                    />
+                  </View>
+                </View>
+              )}
+            </View>
           </View>
-          <Text style={styles.sectionLeftSubtitle}>Blood Group Antigens</Text>
 
-      <ScrollView style={styles.scrcontainer}>
-      {/* {content} */}
-      {renderAntigenContent()}
-      </ScrollView>
+          {/* Supplemental Rule-Out Section */}
+          <View style={styles.section}>
+            <View style={styles.sectionLeftTitleContainer}>
+              <Text style={styles.sectionLeftTitle}>Supplemental Rule-Out (Antibody Rules)</Text>
+              <TouchableOpacity onPress={() => showTooltip('supplementalRule')}>
+                <Icon name="information-outline" size={22} color="#336699" />
+              </TouchableOpacity>
+            </View>
 
-      <Text style={styles.sectionLeftTitle}>Reorder Antigen Groups</Text>
-      <FlatList
-        data={ConstAntigens.MANUFACTURER_GRPORDER_MAP[manuchoice]}
-        renderItem={renderItem}
-        keyExtractor={(item) => item} // Using the item name as key
-        style={styles.list}
-      />
-       
-        </View> 
-        {/* Save Button */}
-        <TouchableOpacity
-          style={styles.saveButton}
-          onPress={handleSave}
-        >
-          <Text style={styles.saveButtonText}>Save</Text>
-        </TouchableOpacity>
-      </ScrollView>
+            <TouchableOpacity style={styles.addButton} onPress={handleAddAntibody}>
+              <Icon name="plus-circle" size={24} color="#336699" />
+              <Text style={styles.addButtonText}>Add Antibody rule</Text>
+            </TouchableOpacity>
 
-      {/* Dropdown Portal - rendered outside of ScrollView but inside SafeAreaView */}
-      {dropdownVisible && (
-        <View
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'transparent',
-            pointerEvents: 'box-none',
-            zIndex: 9999,
-          }}
-        >
-          <View
-            style={[
-              styles.dropdownPortal,
-              {
-                position: 'absolute',
-                top: dropdownPosition.direction === 'down' ? dropdownPosition.top : undefined,
-                bottom: dropdownPosition.direction === 'up' ? (Dimensions.get('window').height - dropdownPosition.top) : undefined,
-                left: dropdownPosition.left,
-                width: dropdownPosition.width || 150, // Provide fallback width
-                maxWidth: Dimensions.get('window').width * 0.9, // Ensure it doesn't go off screen
-              }
-            ]}
+            <View style={styles.tableHeader}>
+              <Text style={styles.antibodyHeader}>Antibody</Text>
+              <Text style={styles.heterozygousHeader}>Rule-Out Threshold (Cells)</Text>
+              <Text style={styles.actionHeader}>Action</Text>
+            </View>
+
+            {(Array.isArray(antibodies) ? antibodies : []).map((antibody) => (
+              <View key={antibody.id} style={styles.tableRow}>
+                <View style={styles.antibodyCell}>
+                  {renderAntigenDropdown(antibody.id, antibody.name)}
+                </View>
+                <View style={styles.heterozygousCell}>
+                  {renderThresholdDropdown(antibody.id, antibody.threshold)}
+                </View>
+                <View style={styles.actionCell}>
+                  <TouchableOpacity
+                    style={styles.deleteButton}
+                    onPress={() => deleteAntibody(antibody.id)}
+                  >
+                    <Icon name="delete" size={20} color="#ff4444" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </View>
+          {/* Save Button */}
+          <TouchableOpacity
+            style={styles.saveButton}
+            onPress={handleSave}
           >
-            {/* Added a container with maxHeight and ScrollView */}
+            <Text style={styles.saveButtonText}>Save</Text>
+          </TouchableOpacity>
+        </ScrollView>
+
+        {/* Dropdown Portal - rendered outside of ScrollView but inside SafeAreaView */}
+        {dropdownVisible && (
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'transparent',
+              pointerEvents: 'box-none',
+              zIndex: 9999,
+            }}
+          >
             <View
               style={[
-                styles.dropdownListContainer,
-                { maxHeight: dropdownPosition.maxHeight }
+                styles.dropdownPortal,
+                {
+                  position: 'absolute',
+                  top: dropdownPosition.direction === 'down' ? dropdownPosition.top : undefined,
+                  bottom: dropdownPosition.direction === 'up' ? (Dimensions.get('window').height - dropdownPosition.top) : undefined,
+                  left: dropdownPosition.left,
+                  width: dropdownPosition.width || 150, // Provide fallback width
+                  maxWidth: Dimensions.get('window').width * 0.9, // Ensure it doesn't go off screen
+                }
               ]}
             >
-              <ScrollView
-                style={styles.dropdownListScroll}
-                nestedScrollEnabled={true}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={true}
+              {/* Added a container with maxHeight and ScrollView */}
+              <View
+                style={[
+                  styles.dropdownListContainer,
+                  { maxHeight: dropdownPosition.maxHeight }
+                ]}
               >
-                <View style={styles.dropdownList}>
-                  {dropdownVisible && dropdownVisible.field === 'antigen' ? (
-                    // Show antigen options
-                    [...availableAntigens, antibodies.find(a => a.id === dropdownVisible.id)?.name]
-                      .filter(Boolean)
-                      .sort() // Sort alphabetically for better usability
-                      .map((option) => (
+                <ScrollView
+                  style={styles.dropdownListScroll}
+                  nestedScrollEnabled={true}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={true}
+                >
+                  <View style={styles.dropdownList}>
+                    {dropdownVisible && dropdownVisible.field === 'antigen' ? (
+                      // Show antigen options
+                      [...availableAntigens, (Array.isArray(antibodies) ? antibodies : []).find(a => a.id === dropdownVisible.id)?.name]
+                        .filter(Boolean)
+                        .sort() // Sort alphabetically for better usability
+                        .map((option) => (
+                          <TouchableOpacity
+                            key={option}
+                            style={[
+                              styles.dropdownItem,
+                              (Array.isArray(antibodies) ? antibodies : []).find(a => a.id === dropdownVisible?.id)?.name === option &&
+                              { backgroundColor: '#f0f7fa' }
+                            ]}
+                            onPress={() => handleAntigenSelection(dropdownVisible.id, option)}
+                          >
+                            <Text style={[
+                              styles.dropdownItemText,
+                              (Array.isArray(antibodies) ? antibodies : []).find(a => a.id === dropdownVisible?.id)?.name === option &&
+                              { color: '#5c8599', fontWeight: '500' }
+                            ]}>
+                              {option}
+                            </Text>
+                          </TouchableOpacity>
+                        ))
+                    ) : (
+                      // Show threshold options
+                      THRESHOLD_VALUES.map((option) => (
                         <TouchableOpacity
                           key={option}
                           style={[
                             styles.dropdownItem,
-                            antibodies.find(a => a.id === dropdownVisible?.id)?.name === option &&
+                            (Array.isArray(antibodies) ? antibodies : []).find(a => a.id === dropdownVisible?.id)?.threshold === option &&
                             { backgroundColor: '#f0f7fa' }
                           ]}
-                          onPress={() => handleAntigenSelection(dropdownVisible.id, option)}
+                          onPress={() => handleThresholdSelection(dropdownVisible!.id, option)}
                         >
                           <Text style={[
                             styles.dropdownItemText,
-                            antibodies.find(a => a.id === dropdownVisible?.id)?.name === option &&
+                            (Array.isArray(antibodies) ? antibodies : []).find(a => a.id === dropdownVisible?.id)?.threshold === option &&
                             { color: '#5c8599', fontWeight: '500' }
                           ]}>
                             {option}
                           </Text>
                         </TouchableOpacity>
                       ))
-                  ) : (
-                    // Show threshold options
-                    THRESHOLD_VALUES.map((option) => (
-                      <TouchableOpacity
-                        key={option}
-                        style={[
-                          styles.dropdownItem,
-                          antibodies.find(a => a.id === dropdownVisible?.id)?.threshold === option &&
-                          { backgroundColor: '#f0f7fa' }
-                        ]}
-                        onPress={() => handleThresholdSelection(dropdownVisible!.id, option)}
-                      >
-                        <Text style={[
-                          styles.dropdownItemText,
-                          antibodies.find(a => a.id === dropdownVisible?.id)?.threshold === option &&
-                          { color: '#5c8599', fontWeight: '500' }
-                        ]}>
-                          {option}
-                        </Text>
-                      </TouchableOpacity>
-                    ))
-                  )}
-                </View>
-              </ScrollView>
+                    )}
+                  </View>
+                </ScrollView>
+              </View>
             </View>
           </View>
-        </View>
-      )}
+        )}
 
-      {/* Tooltip Modal */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={tooltipVisible}
-        onRequestClose={() => setTooltipVisible(false)}
-      >
-        <TouchableOpacity
-          style={styles.tooltipOverlay}
-          activeOpacity={1}
-          onPress={() => setTooltipVisible(false)}
+        {/* Tooltip Modal */}
+        <Modal
+          animationType="fade"
+          transparent={true}
+          visible={tooltipVisible}
+          onRequestClose={() => setTooltipVisible(false)}
         >
-          <View style={styles.tooltipContainer}>
-            <View style={styles.tooltipContent}>
-              <Text style={styles.tooltipTitle}>{TOOLTIP_CONTENT[activeTooltip].title}</Text>
-              <Text style={styles.tooltipText}>{TOOLTIP_CONTENT[activeTooltip].content}</Text>
+          <TouchableOpacity
+            style={styles.tooltipOverlay}
+            activeOpacity={1}
+            onPress={() => setTooltipVisible(false)}
+          >
+            <View style={styles.tooltipContainer}>
+              <View style={styles.tooltipContent}>
+                <Text style={styles.tooltipTitle}>{TOOLTIP_CONTENT[activeTooltip].title}</Text>
+                <Text style={styles.tooltipText}>{TOOLTIP_CONTENT[activeTooltip].content}</Text>
 
-              <TouchableOpacity
-                style={styles.tooltipCloseButton}
-                onPress={() => setTooltipVisible(false)}
-              >
-                <Text style={styles.tooltipCloseText}>Close</Text>
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.tooltipCloseButton}
+                  onPress={() => setTooltipVisible(false)}
+                >
+                  <Text style={styles.tooltipCloseText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* Edit Modal */}
+        <Modal
+          animationType="fade"
+          transparent={true}
+          visible={editModalVisible}
+          onRequestClose={() => setEditModalVisible(false)}
+        >
+          <View style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>
+                Edit {editTarget?.type === 'group' ? 'Group' : 'Antigen'} Name
+              </Text>
+              <TextInput
+                style={[styles.fieldText, { width: '100%', marginBottom: 20 }]}
+                value={editInputValue}
+                onChangeText={setEditInputValue}
+                placeholder="Enter new name"
+                autoFocus
+              />
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={styles.confirmButton} onPress={saveEdit}>
+                  <Text style={styles.confirmButtonText}>Save</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.cancelButton} onPress={() => setEditModalVisible(false)}>
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </TouchableOpacity>
-      </Modal>
+        </Modal>
 
-      <LogoutModal
-        visible={logoutModalVisible}
-        onCancel={() => setLogoutModalVisible(false)}
-        onConfirm={confirmLogout}
-      />
+        <LogoutModal
+          visible={logoutModalVisible}
+          onCancel={() => setLogoutModalVisible(false)}
+          onConfirm={confirmLogout}
+        />
 
-      {/* Confirmation Modal */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={modalVisible}
-        onRequestClose={cancelGoBack}
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Are you sure you want to go back?</Text>
-            <Text style={styles.modalText}>All entered data will be lost!</Text>
+        {/* Confirmation Modal */}
+        <Modal
+          animationType="fade"
+          transparent={true}
+          visible={modalVisible}
+          onRequestClose={cancelGoBack}
+        >
+          <View style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Are you sure you want to go back?</Text>
+              <Text style={styles.modalText}>All entered data will be lost!</Text>
 
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.confirmButton}
-                onPress={confirmGoBack}
-              >
-                <Text style={styles.confirmButtonText}>Confirm</Text>
-              </TouchableOpacity>
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.confirmButton}
+                  onPress={confirmGoBack}
+                >
+                  <Text style={styles.confirmButtonText}>Confirm</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={cancelGoBack}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={cancelGoBack}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
-    </SafeAreaView>
+        </Modal>
+      </SafeAreaView>
+    </GestureHandlerRootView>
   );
 };
 
@@ -1049,7 +1341,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     borderWidth: 1,
     borderColor: '#ccc',
-    },
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1083,7 +1375,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 10,
-  },  
+  },
   selected: {
     height: 10,
     width: 10,
@@ -1097,7 +1389,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginVertical: 10,
     fontFamily: FONTS.POPPINS_BOLD,
-  },  
+  },
   logoutButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1126,7 +1418,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
 
-  },  
+  },
   sectionTitleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1141,7 +1433,7 @@ const styles = StyleSheet.create({
   sectionLeftTitleContainer: {
     flexDirection: 'row',
     marginBottom: 15,
-  }, 
+  },
   sectionLeftTitle: {
     fontSize: 20,
     color: '#336699',
@@ -1171,7 +1463,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#1A1A1A',
     textAlign: 'left',
-  },  
+  },
   pickerWrapper: {
     borderWidth: 1,
     borderColor: '#ccc',
@@ -1183,7 +1475,7 @@ const styles = StyleSheet.create({
   iconOverlay: {
     position: 'absolute',
     right: 15,
-    top: 18, 
+    top: 18,
   },
   chevron: {
     fontSize: 12,
@@ -1204,7 +1496,7 @@ const styles = StyleSheet.create({
   result: {
     marginTop: 20,
     fontSize: 16,
-  },  
+  },
   noteText: {
     fontSize: 14,
     color: '#666',
@@ -1293,7 +1585,7 @@ const styles = StyleSheet.create({
     color: '#000',
   },
 
-    title: {
+  title: {
     fontSize: 18,
     fontWeight: 'bold',
     marginBottom: 10,
@@ -1353,6 +1645,21 @@ const styles = StyleSheet.create({
   radioOption: {
     marginRight: 30,
   },
+  rradioOptionCont: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 16,
+    marginBottom: 8,
+    backgroundColor: '#f5f5f5',
+    borderRadius: 20,
+    paddingHorizontal: 5,
+  },
+  rradioOptionInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+  },
+
   radioButton: {
     width: 24,
     height: 24,
@@ -1378,7 +1685,7 @@ const styles = StyleSheet.create({
   radioText: {
     fontSize: 16,
     color: '#333',
-    },
+  },
   addButton: {
     flexDirection: 'row',
     alignItems: 'center',
