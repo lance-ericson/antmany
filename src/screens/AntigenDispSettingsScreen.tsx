@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  ScrollView,
   Modal,
   Dimensions,
   Alert,
@@ -12,6 +11,7 @@ import {
   FlatList,
   TextInput
 } from 'react-native';
+import { ScrollView } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -58,6 +58,45 @@ const TOOLTIP_CONTENT = {
 type SelectedAntigens = Record<string, string>;
 // Type for state: { "GroupName": Set(["Antigen1", "Antigen2"]) }
 type SelectedAntigens2 = Record<string, boolean[]>;
+
+// Helper component for stable antigen items to prevent drag-and-drop glitches
+const AntigenItem = React.memo(({
+  antigen,
+  groupName,
+  isSelected,
+  drag,
+  isActive,
+  onToggle
+}: {
+  antigen: string;
+  groupName: string;
+  isSelected: boolean;
+  drag: () => void;
+  isActive: boolean;
+  onToggle: (groupName: string, antigen: string) => void;
+}) => {
+  return (
+    <ScaleDecorator>
+      <View style={[
+        styles.rradioOptionCont,
+        { backgroundColor: isActive ? '#e8f4f8' : 'transparent' }
+      ]}>
+        <TouchableOpacity
+          style={styles.rradioOptionInner}
+          onPress={() => onToggle(groupName, antigen)}
+        >
+          <View style={[styles.radioCircle, isSelected && styles.selectedCircle]}>
+            {isSelected && <View style={styles.selectedInnerCircle} />}
+          </View>
+          <Text style={styles.antigenText}>{antigen}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPressIn={drag} style={{ paddingHorizontal: 6 }}>
+          <Icon name="drag-horizontal-variant" size={18} color="#999" />
+        </TouchableOpacity>
+      </View>
+    </ScaleDecorator>
+  );
+});
 
 const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ navigation }) => {
   const [isEditing, setIsEditing] = useState(false);
@@ -122,8 +161,10 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
       // 1. Get the array of booleans for the current group
       const currentGroupSelections = prevSelected[groupName] || [];
 
-      // 2. Find the index of the clicked antigen in the master list
-      const antigenIndex = ConstAntigens.DEFAULT_GROUP_MEMBERS[groupName].indexOf(antigen);
+      // 2. Find the index of the clicked antigen in the LIVE group members (not the hardcoded default)
+      const antigenIndex = (groupMembers[groupName] || []).indexOf(antigen);
+
+      if (antigenIndex === -1) return prevSelected; // antigen not found, do nothing
 
       // 3. Create a copy of the specific group's selection array
       const updatedGroupSelections = [...currentGroupSelections];
@@ -349,6 +390,37 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
     setEditModalVisible(false);
   };
 
+  const deleteAntigen = async (groupName: string, index: number) => {
+    // Remove from groupMembers
+    const updatedMembers = { ...groupMembers };
+    const newList = [...(updatedMembers[groupName] || [])];
+    newList.splice(index, 1);
+    updatedMembers[groupName] = newList;
+    setGroupMembers(updatedMembers);
+
+    // Remove corresponding selection state
+    const updatedSelections = { ...selectedAnt };
+    const newSelections = [...(updatedSelections[groupName] || [])];
+    newSelections.splice(index, 1);
+    updatedSelections[groupName] = newSelections;
+    setSelected(updatedSelections);
+
+    // Sync rh-hr antigens if needed
+    if (groupName.toLowerCase() === 'rh-hr') {
+      setRHHRAnts(newList);
+    }
+
+    // Persist immediately to DB
+    try {
+      await DatabaseService.saveSetting(`groupMembers_${manuchoice}`, JSON.stringify(updatedMembers));
+      await DatabaseService.saveSetting(`selectedAnt_${manuchoice}`, JSON.stringify(updatedSelections));
+    } catch (err) {
+      console.error('Error auto-saving after antigen delete:', err);
+    }
+
+    setEditModalVisible(false);
+  };
+
   useEffect(() => {
     const initMfrs = async () => {
       const mfrListStr = await DatabaseService.getSetting('manufacturersList');
@@ -374,10 +446,18 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Delete", style: "destructive", onPress: () => {
-            setManufacturersList(prev => prev.filter(m => m !== manuchoice));
+          text: "Delete", style: "destructive", onPress: async () => {
+            const updatedList = manufacturersList.filter(m => m !== manuchoice);
+            setManufacturersList(updatedList);
             setManuChoice("Create New");
             setManuNameText("");
+            // Persist immediately — no need to press Save
+            try {
+              await DatabaseService.saveSetting('manufacturersList', JSON.stringify(updatedList));
+              await DatabaseService.saveSetting('manuchoice', 'Create New');
+            } catch (err) {
+              console.error('Error saving after manufacturer delete:', err);
+            }
           }
         }
       ]
@@ -467,7 +547,7 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
   };
 
 
-  const renderItem = ({ item, drag, isActive }: RenderItemParams<string>) => (
+  const renderItem = useCallback(({ item, drag, isActive }: RenderItemParams<string>) => (
     <ScaleDecorator>
       <TouchableOpacity
         activeOpacity={1}
@@ -483,7 +563,7 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
         </View>
       </TouchableOpacity>
     </ScaleDecorator>
-  );
+  ), []);
 
   const renderRHHRItem = ({ item, index }: { item: string; index: number }) => (
     <View style={styles.itemContainer2}>
@@ -595,7 +675,21 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
 
   const deleteAntibody = (id: number) => {
     const safeAntibodies = Array.isArray(antibodies) ? antibodies : [];
-    setAntibodies(safeAntibodies.filter(antibody => antibody.id !== id));
+    const updated = safeAntibodies.filter(antibody => antibody.id !== id);
+    setAntibodies(updated);
+
+    // Persist immediately — no need to press Save
+    const antibodyRulesData = updated.map(antibody => ({
+      id: antibody.id,
+      name: antibody.name,
+      isSelected: 'Yes',
+      isHeterozygous: antibody.threshold,
+    }));
+    DatabaseService.saveAntibodyRules(antibodyRulesData).catch(err =>
+      console.error('Error auto-saving after delete:', err)
+    );
+    // Keep original state in sync so the unsaved-changes guard stays quiet
+    setOriginalAntibodies(updated);
   };
 
   const handleSave = async () => {
@@ -708,88 +802,87 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
   // };
 
   const renderAntigenContent = () => {
-    // 1. Always start with an empty array to "clear" previous renders
     const content: ReactNode[] = [];
     const selectedData = groupMembers;
 
     for (const groupName of groups) {
       if (!selectedData[groupName]) continue;
       const antigens = selectedData[groupName];
-      const antigenButtons: ReactNode[] = [];
 
-      // Build the individual antigen buttons
-      for (let i = 0; i < antigens.length; i++) {
-        const antigen = antigens[i];
-        if (!antigen) continue;
+      let antigenDisplay: ReactNode;
 
-        const isSelected = selectedAnt[groupName] ? selectedAnt[groupName][i] : false;
+      if (isEditing) {
+        // Edit mode: DraggableFlatList with drag handles, no arrows
+        antigenDisplay = (
+          <DraggableFlatList
+            data={antigens}
+            keyExtractor={(item) => `${groupName}-${item}`}
+            scrollEnabled={false}
+            nestedScrollEnabled={true}
+            onDragEnd={({ data }) => {
+              // Functional update to ensure we have the latest state and batch correctly
+              setGroupMembers(prevMembers => {
+                const oldOrder = prevMembers[groupName] || [];
 
+                setSelected(prevSelected => {
+                  const selections = prevSelected[groupName] || [];
+                  const newSelections = data.map(antigen => {
+                    const oldIdx = oldOrder.indexOf(antigen);
+                    return oldIdx >= 0 ? (selections[oldIdx] ?? false) : false;
+                  });
+                  return { ...prevSelected, [groupName]: newSelections };
+                });
 
+                if (groupName.toLowerCase() === 'rh-hr') {
+                  setRHHRAnts(data);
+                }
 
-        antigenButtons.push(
-          <View key={`${groupName}-${antigen}`} style={styles.rradioOptionCont}>
-            {isEditing && (
-              <TouchableOpacity onPress={() => moveAntigen(groupName, i, -1)} disabled={i === 0}>
-                <Icon name="chevron-left" size={20} color={i === 0 ? '#ccc' : '#6264d4'} />
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity
-              style={styles.rradioOptionInner}
-              onPress={() => isEditing && toggleAntigen(groupName, antigen)}
-              disabled={!isEditing}
-            >
-              <View style={[styles.radioCircle, isSelected && styles.selectedCircle, !isEditing && { borderColor: '#ccc' }]}>
-                {isSelected && <View style={[styles.selectedInnerCircle, !isEditing && { backgroundColor: '#ccc' }]} />}
-              </View>
-              <Text style={styles.antigenText}>{antigen}</Text>
-            </TouchableOpacity>
-            {isEditing && (
-              <>
-                <TouchableOpacity style={{ marginHorizontal: 4 }} onPress={() => { setEditTarget({ type: 'antigen', groupName, index: i }); setEditInputValue(antigen); setEditModalVisible(true); }}>
-                  <Icon name="pencil" size={14} color="#888" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => moveAntigen(groupName, i, 1)} disabled={i === antigens.length - 1}>
-                  <Icon name="chevron-right" size={20} color={i === antigens.length - 1 ? '#ccc' : '#6264d4'} />
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
+                return { ...prevMembers, [groupName]: data };
+              });
+            }}
+            renderItem={({ item: antigen, drag, isActive }) => {
+              const currentGroupSelections = selectedAnt[groupName] || [];
+              const currentGroupAntigens = groupMembers[groupName] || [];
+              const i = currentGroupAntigens.indexOf(antigen);
+              const isSelected = currentGroupSelections[i] ?? false;
+
+              return (
+                <AntigenItem
+                  antigen={antigen}
+                  groupName={groupName}
+                  isSelected={isSelected}
+                  drag={drag}
+                  isActive={isActive}
+                  onToggle={toggleAntigen}
+                />
+              );
+            }}
+          />
         );
+      } else {
+        // View mode: original horizontal grid
+        const antigenButtons: ReactNode[] = [];
+        for (let i = 0; i < antigens.length; i++) {
+          const antigen = antigens[i];
+          if (!antigen) continue;
+          const isSelected = selectedAnt[groupName] ? selectedAnt[groupName][i] : false;
+          antigenButtons.push(
+            <View key={`${groupName}-${antigen}`} style={styles.rradioOptionCont}>
+              <TouchableOpacity
+                style={styles.rradioOptionInner}
+                disabled={true}
+              >
+                <View style={[styles.radioCircle, isSelected && styles.selectedCircle, { borderColor: '#ccc' }]}>
+                  {isSelected && <View style={[styles.selectedInnerCircle, { backgroundColor: '#ccc' }]} />}
+                </View>
+                <Text style={styles.antigenText}>{antigen}</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        }
+        antigenDisplay = <View style={styles.antigenGrid}>{antigenButtons}</View>;
       }
 
-      // Handle the Reorder Section for Rh-Hr
-      // if (groupName.toLowerCase() === "rh-hr") {
-      //   content.push(
-      //     <TouchableOpacity
-      //       key="reorder-toggle-btn"
-      //       style={styles.saveButton}
-      //       onPress={() => setRHHRReorder(!reorderRhHrflag)}
-      //     >
-      //       <Text style={styles.saveButtonText}>
-      //         {reorderRhHrflag ? "Hide Reorder" : "Reorder RH-HR Group"}
-      //       </Text>
-      //     </TouchableOpacity>
-      //   );
-
-      //   // This section only exists in the array if the flag is true
-      //   if (reorderRhHrflag) {
-      //     content.push(
-      //       <View key="reorder-flatlist-container">
-      //         <Text style={styles.saveButtonText}>Reorder RH-HR antigen display</Text>
-      //         <FlatList
-      //           data={rhhrAntigens}
-      //           renderItem={renderRHHRItem}
-      //           keyExtractor={(item) => item}
-      //           style={styles.list}
-      //           extraData={rhhrAntigens}
-      //           scrollEnabled={false} // Recommended if nested in a ScrollView
-      //         />
-      //       </View>
-      //     );
-      //   }
-      // }
-
-      // Push the main group container
       content.push(
         <View key={groupName} style={styles.groupContainer}>
           <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
@@ -803,7 +896,7 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
               </TouchableOpacity>
             )}
           </View>
-          <View style={styles.antigenGrid}>{antigenButtons}</View>
+          {antigenDisplay}
         </View>
       );
     }
@@ -1053,10 +1146,10 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
             <View style={styles.fieldContainer}>
               <TextInput
                 ref={manuInputRef}
-                style={styles.fieldText} // Apply text styles here
-                value={manuName === "" ? manuchoice : manuName} // The variable holding the manufacturer name
-                onChangeText={(text) => setManuNameText(text)} // Function to update state
-                placeholder="Or enter Manufacturer"
+                style={styles.fieldText}
+                value={manuName !== "" ? manuName : (manuchoice === "Create New" ? "" : manuchoice)}
+                onChangeText={(text) => setManuNameText(text)}
+                placeholder={manuchoice === "Create New" ? "Create New" : "Or enter Manufacturer"}
               />
             </View>
             {/* SPLIT LAYOUT */}
@@ -1065,9 +1158,9 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
               <View style={{ flex: isEditing ? 6 : 10, paddingRight: isEditing ? 15 : 0 }}>
                 <Text style={styles.sectionLeftSubtitle}>Blood Group Antigens</Text>
 
-                <ScrollView style={[styles.scrcontainer, { minHeight: 400 }]}>
+                <View style={[styles.scrcontainer, { minHeight: 400 }]}>
                   {renderAntigenContent()}
-                </ScrollView>
+                </View>
               </View>
 
               {/* RIGHT SIDE */}
@@ -1287,6 +1380,27 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
                   <Text style={styles.cancelButtonText}>Cancel</Text>
                 </TouchableOpacity>
               </View>
+              {/* {editTarget?.type === 'antigen' && (
+                <TouchableOpacity
+                  style={[styles.cancelButton, { backgroundColor: '#ff4444', marginTop: 10 }]}
+                  onPress={() => {
+                    Alert.alert(
+                      'Delete Antigen',
+                      `Are you sure you want to delete "${editTarget.antigenName || editInputValue}"?`,
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        {
+                          text: 'Delete',
+                          style: 'destructive',
+                          onPress: () => deleteAntigen(editTarget.groupName, editTarget.index!),
+                        },
+                      ]
+                    );
+                  }}
+                >
+                  <Text style={[styles.cancelButtonText, { color: '#fff' }]}>Delete Antigen</Text>
+                </TouchableOpacity>
+              )} */}
             </View>
           </View>
         </Modal>
@@ -1563,7 +1677,7 @@ const styles = StyleSheet.create({
   },
 
   ggroupTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
     marginBottom: 10,
     color: '#333',
@@ -1581,7 +1695,7 @@ const styles = StyleSheet.create({
   },
 
   antigenText: {
-    fontSize: 12,
+    fontSize: 16,
     color: '#000',
   },
 
