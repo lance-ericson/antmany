@@ -91,7 +91,7 @@ const AntigenItem = React.memo(({
           <Text style={styles.antigenText}>{antigen}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPressIn={drag} style={{ paddingHorizontal: 6 }}>
-          <Icon name="drag-horizontal-variant" size={18} color="#999" />
+          <Icon name="drag-horizontal-variant" size={24} color="#999" />
         </TouchableOpacity>
       </View>
     </ScaleDecorator>
@@ -176,6 +176,26 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
       return {
         ...prevSelected,
         [groupName]: updatedGroupSelections,
+      };
+    });
+  };
+
+  const selectAll = (groupName: string) => {
+    setSelected((prevSelected) => {
+      const currentGroupAntigens = groupMembers[groupName] || [];
+      return {
+        ...prevSelected,
+        [groupName]: new Array(currentGroupAntigens.length).fill(true),
+      };
+    });
+  };
+
+  const deselectAll = (groupName: string) => {
+    setSelected((prevSelected) => {
+      const currentGroupAntigens = groupMembers[groupName] || [];
+      return {
+        ...prevSelected,
+        [groupName]: new Array(currentGroupAntigens.length).fill(false),
       };
     });
   };
@@ -885,15 +905,29 @@ const AntigenDispSettingsScreen: React.FC<AntigenDispSettingsScreenProps> = ({ n
 
       content.push(
         <View key={groupName} style={styles.groupContainer}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-            <Text style={[styles.groupTitle, { marginBottom: 0 }]}>{groupName}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10, justifyContent: 'space-between' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Text style={[styles.groupTitle, { marginBottom: 0 }]}>{groupName}</Text>
+              {isEditing && (
+                <TouchableOpacity
+                  style={{ marginLeft: 10, padding: 4 }}
+                  onPress={() => { setEditTarget({ type: 'group', groupName }); setEditInputValue(groupName); setEditModalVisible(true); }}
+                >
+                  <Icon name="pencil" size={16} color="#666" />
+                </TouchableOpacity>
+              )}
+            </View>
+
             {isEditing && (
-              <TouchableOpacity
-                style={{ marginLeft: 10, padding: 4 }}
-                onPress={() => { setEditTarget({ type: 'group', groupName }); setEditInputValue(groupName); setEditModalVisible(true); }}
-              >
-                <Icon name="pencil" size={16} color="#666" />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row' }}>
+                <TouchableOpacity
+                  style={styles.groupActionButton}
+                  onPress={() => selectAll(groupName)}
+                >
+                  <Text style={styles.groupActionText}>Select All</Text>
+                </TouchableOpacity>
+
+              </View>
             )}
           </View>
           {antigenDisplay}
@@ -1636,8 +1670,8 @@ const styles = StyleSheet.create({
     paddingBottom: 5,
   },
   groupTitle: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: 'bold',
     color: '#333',
     marginBottom: 8,
   },
@@ -1652,22 +1686,22 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   radioCircle: {
-    height: 18,
-    width: 18,
-    borderRadius: 10,
+    height: 20,
+    width: 20,
+    borderRadius: 11,
     borderWidth: 2,
     borderColor: '#555',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 2,
+    marginRight: 4,
   },
   selectedCircle: {
     borderColor: '#007AFF',
   },
   selectedInnerCircle: {
-    height: 8,
-    width: 8,
-    borderRadius: 4,
+    height: 10,
+    width: 10,
+    borderRadius: 6,
     backgroundColor: '#007AFF',
   },
   radioLabel: {
@@ -1738,7 +1772,7 @@ const styles = StyleSheet.create({
     borderColor: '#5c8599',
   },
   itemText: {
-    fontSize: 14,
+    fontSize: 16,
     flex: 1,
     color: '#000',
   },
@@ -1762,11 +1796,12 @@ const styles = StyleSheet.create({
   rradioOptionCont: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginRight: 16,
+    justifyContent: 'space-between',
     marginBottom: 8,
     backgroundColor: '#f5f5f5',
     borderRadius: 20,
-    paddingHorizontal: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
   },
   rradioOptionInner: {
     flexDirection: 'row',
@@ -2048,6 +2083,19 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '500',
+  },
+  groupActionButton: {
+    backgroundColor: 'white',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'black',
+  },
+  groupActionText: {
+    fontSize: 11,
+    color: 'black',
+    fontWeight: '600',
   },
 });
 
